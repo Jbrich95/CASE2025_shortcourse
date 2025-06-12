@@ -1,0 +1,885 @@
+---
+title: "CASE Workshop 2025: Shortcourse"
+output: html_document
+date: "2025-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+We will be using Google Colab to implement this deep extreme quantile regression example. First, go to [https://colab.research.google.com/](https://colab.research.google.com/). Click File -> New notebook in Drive, and then change the runtime to R (Runtime -> Change runtime type, then pick R in the dropdown). We will not be using GPUs, so keep the CPU box checked.
+
+```{r, include = F}
+library(keras)
+reticulate::use_condaenv("USWildfiresExtremes", required = T)
+sess = k_get_session()
+sess$list_devices()
+library(tensorflow)
+```
+
+# Installation
+
+To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+
+```{r, eval = F}
+remotes::install_github("rstudio/tensorflow")
+```
+
+```{r eval = F}
+install.packages("keras")
+```
+
+```{r }
+library("keras")
+is_keras_available()
+```
+
+
+```{r}
+set.seed(1)
+tensorflow::set_random_seed(1)
+```
+
+## Extracting a dataset
+
+```{r}
+file_url <- "https://github.com/Jbrich95/pinnEV/blob/main/data/USWild.rda?raw=true"
+load(url(file_url))
+```
+
+The data are described in [Richards and Huser (2022)](https://arxiv.org/abs/2208.07581) and also [here](https://github.com/Jbrich95/pinnEV/blob/main/R/USWild.R). We just take the last 5 years (there's 7 months per year).
+
+```{r}
+Y = USWild$BA[127:161, , ]
+X = array(dim = c(35, 129, 61, 22))
+X[, , , 1] = USWild$X$X.t2m[127:161, , , ]
+X[, , , 2] = USWild$X$X.SPI[127:161, , , ]
+X[, , , -c(1, 2)] = USWild$X$X.N[127:161, , , 1:20]
+cov.names <- c("t2m", "SPI", USWild$X$cov.names[1:20])
+```
+
+The data are arranged on a regular spatial grid, and we have 42 covariates.
+```{r}
+dim(X)
+```
+
+The response is monthly square-root burnt area due to wildfires in the US.
+```{r}
+image(log(1+ Y[1, , ]), col = heat.colors(20, rev = T),asp=0.625)
+```
+
+We can also look at some of the covariates.
+
+```{r, out.width="1200px"}
+par(mfrow = c(1, 2))
+image(X[1, , , 1], col = heat.colors(20, rev = T), main = "temperature",asp=0.625)
+image(X[1, , , 2], col = terrain.colors(20, rev = T), main = "SPI",asp=0.625)
+```
+We will model extremes of poitive square-root burnt areas. Note that I'm removing all zero values.
+```{r}
+X.positive <- apply(X, 4, function(x) x[Y > 0])
+Y.positive <- sqrt(Y[Y > 0])
+```
+
+First, scale the covariates to have zero mean, unit variance.
+
+```{r}
+means <- apply(X.positive, 2, mean)
+sds <- apply(X.positive, 2, sd)
+X.scaled <- apply(as.matrix(1:ncol(X.positive)), 1, function(ind)
+  (X.positive[, ind] - means[ind]) / sds[ind])
+```
+
+# Standard prediction
+
+We now build and train a standard prediction model with Keras. To account for the heavy-tailedness of the response, we will target the expected log of Y, using the mean-squared error loss function.
+
+For simplicity, we will sample 50000 observations for training and 10000 for testing.
+
+```{r}
+n = length(Y.positive)
+train_sample_idx <- sample(1:n, 45000)
+test_sample_idx <- sample((1:n)[-train_sample_idx], 5000)
+Y_train <- Y.positive[train_sample_idx]
+X_train <- X.scaled[train_sample_idx, ]
+Y_test <- Y.positive[test_sample_idx]
+X_test <- X.scaled[test_sample_idx, ]
+```
+
+Build the model sequentially. Here we have two hidden layers, each of width 64, with ReLU activation functions. The final layer has a linear activation function:
+
+```{r}
+model <- keras_model_sequential()
+
+model %>%
+
+  # Adds a densely-connected layer with 64 units to the model:
+  layer_dense(units = 64, activation = 'relu') %>%
+
+  # Add another:
+  layer_dense(units = 64, activation = 'relu') %>%
+  
+  
+  # Add a final layer with 1 ouput
+  layer_dense(units = 1, activation = 'linear')
+```
+
+Compile the model with a loss function and an optimizer Here we use Adam with standard hyper-parameters, and the MSE loss function to do regular prediction.
+
+```{r}
+model %>% compile(
+  optimizer = "adam",
+  loss = "mean_squared_error",
+  metrics = list("mean_absolute_error")
+)
+```
+
+
+Now fit the model. We train the model for 50 epochs, with a 80/20 validation data split. Note that the model gradients are not evaluated on the validation data.
+
+```{r}
+history <- model %>% fit(
+  x = as.matrix(X_train),
+  y = as.matrix(log(Y_train)),
+  epochs = 100,
+  validation_split = 0.2,
+    verbose = 0,
+  shuffle=T
+)
+```
+
+```{r}
+plot(history)
+summary(model)
+```
+
+We can see the the model begins to overfit very quickly. Let's re-run the model with a checkpoint to record the model which generalises best to the validation dataset.
+
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = 1, activation = 'linear') %>% 
+  compile( optimizer = "adam", loss = "mean_squared_error", 
+           metrics = list("mean_absolute_error"))
+
+checkpoint <- callback_model_checkpoint(
+  paste0("checkpoints/LSE"),
+  monitor = "val_loss",
+  verbose = 0,
+  save_best_only = TRUE,
+  save_weights_only = TRUE,
+  mode = "min",
+  save_freq = "epoch"
+)
+history <- model %>% fit( x = X_train,
+                          y = as.matrix(log(Y_train)),
+                          epochs=30,
+                          batch_size=32,
+                            verbose = 0,
+                          callback = list(checkpoint),
+                          validation_split=0.2)
+```
+Now load that best checkpoint:
+```{r}
+model <- load_model_weights_tf(model,
+                                 filepath = paste0("checkpoints/LSE"))
+```
+
+Get your predictions
+
+```{r}
+predictions <- model %>% predict(X_test)
+```
+
+```{r}
+plot(log(Y_test), predictions)
+abline(a = 0, b = 1)
+```
+
+A linear model for comparison:
+```{r}
+linear.model <- keras_model_sequential() %>%
+  layer_dense(units = 1, activation = 'linear') %>% 
+  compile( optimizer = "adam", loss = "mean_squared_error", 
+           metrics = list("mean_absolute_error"))
+
+
+history <- linear.model %>% fit( x = X_train,
+                          y = as.matrix(log(Y_train)),
+                          epochs=15,
+                            verbose = 0,
+                          validation_split=0.2)
+
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+predictions <- linear.model %>% predict(X_test)
+```
+
+```{r}
+plot(log(Y_test), predictions, asp = 1)
+abline(a = 0, b = 1)
+```
+
+```{r, out.width="1500px"}
+par(mfrow = c(1, 3))
+
+t <- 1
+X.plot <- X[t, , , ]
+dim(X.plot) <- c(prod(dim(X.plot)[1:2]), dim(X.plot)[3])
+# Apply scaling
+X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
+  (X.plot[, ind] - means[ind]) / sds[ind])
+
+linear.predictions <- linear.model %>% predict(X.plot.scaled)
+dim(linear.predictions) <- dim(Y)[2:3]
+#linear.predictions[Y[t, , ] < 0] = NA #Uncomment for US-wide prediction
+linear.predictions[Y[t, , ] <= 0] = NA
+image(log(Y[t, , ]), main = "Observation",asp=0.625)
+image(linear.predictions, main = "Linear model predictions",asp=0.625)
+
+NN.predictions <- model %>% predict(X.plot.scaled)
+dim(NN.predictions) <- dim(Y)[2:3]
+#NN.predictions[Y[t, , ] < 0] = NA $Uncomment for US-wide prediction
+NN.predictions[Y[t, , ] <= 0] = NA
+image(NN.predictions, main = "MLP model predictions",asp=0.625)
+
+```
+
+
+
+# Quantile regression
+
+Now let's do deep quantile regression. We will target the $\tau = 0.8$ quantile by using the quantile/tilted loss function. We will supply this as a custom loss function to Keras.
+
+```{r}
+tau <- 0.8
+tilted_loss <- function(y_true, y_pred) {
+  
+  K <- backend()
+  
+  error = y_true - y_pred
+  return(K$mean(K$maximum(tau * error, (tau - 1) * error) ))
+}
+```
+
+Now, we use the same hidden layer model, but target the 80% quantile of Y. 
+
+```{r}
+u.model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = 64, activation = 'relu')  
+
+```
+
+This time I will specify an exponential activation in the final layer, to ensure that the quantile is strictly positive.  
+```{r}
+u.model <- u.model %>% layer_dense(
+  units = 1,
+  activation = "exponential")
+
+
+```
+
+
+```{r}
+u.model %>%
+  compile(optimizer = "adam", loss = tilted_loss)
+
+checkpoint <- callback_model_checkpoint(
+  paste0("checkpoints/u"),
+  monitor = "val_loss",
+  verbose = 0,
+  save_best_only = TRUE,
+  save_weights_only = TRUE,
+  mode = "min",
+  save_freq = "epoch"
+)
+
+history <- u.model %>% fit(
+  x = X_train,
+  y = as.matrix(Y_train),
+  batch_size = 64,
+  epochs = 40,
+    verbose = 0,
+  callback = list(checkpoint),
+  validation_split = 0.2
+)
+```
+
+```{r}
+plot(history)
+```
+
+Now load that best checkpoint:
+```{r}
+u.model <- load_model_weights_tf(u.model,
+                                 filepath = paste0("checkpoints/u"))
+```
+
+Get your predictions
+
+```{r}
+test.pred.theshold <- u.model %>% predict(X_test)
+```
+Sanity check
+```{r}
+mean(Y_test < test.pred.theshold) # Should be close to tau
+```
+
+```{r, out.width="1500px"}
+par(mfrow = c(1, 2))
+
+t <- 3
+X.plot <- X[t, , , ]
+dim(X.plot) <- c(prod(dim(X.plot)[1:2]), dim(X.plot)[3])
+# Apply scaling
+X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
+  (X.plot[, ind] - means[ind]) / sds[ind])
+
+image(log(Y[t, , ]), main = "Observation",asp=0.625)
+
+NN.predictions <- u.model %>% predict(X.plot.scaled)
+dim(NN.predictions) <- dim(Y)[2:3]
+NN.predictions[Y[t, , ] < 0] = NA
+NN.predictions[Y[t, , ] <= 0] = NA
+image(log(NN.predictions), main = "Threshold prediction",asp=0.625)
+
+```
+
+# Fit a GPD model
+
+First, get our excesses. We will use the same train/test split as before.
+```{r}
+train.pred.threshold <- u.model %>% predict( X_train)
+
+train.exceed_idx = which(Y_train > train.pred.threshold)
+
+Y_train.excess = (Y_train-train.pred.threshold)[train.exceed_idx]
+X_train.excess = X_train[train.exceed_idx,]
+
+test.exceed_idx = which(Y_test > test.pred.theshold)
+
+Y_test.excess = (Y_test-test.pred.theshold)[test.exceed_idx]
+X_test.excess = X_test[test.exceed_idx,]
+length(Y_train.excess)
+length(Y_test.excess)
+```
+
+As we have much less data, we will build a simpler model.
+
+```{r}
+GPD.model <- keras_model_sequential() %>%
+  layer_dense(units = 32, activation = 'sigmoid') %>%
+  layer_dense(units = 32, activation = 'sigmoid') 
+
+```
+
+This time, the final activation layer has two hidden units: one each for sigma and xi. We use an exponential activation function to ensure that these are both positive.
+```{r}
+GPD.model <- GPD.model %>% layer_dense(units = 2, activation = "exponential")
+```
+
+Now, let's write the loss function. 
+
+```{r}
+# Note that we are treating the first dimension of the output as sigma, and the second as xi
+GPD_nll <- function(y_true, y_pred) {
+  K <- backend()
+  
+  sigma = y_pred[all_dims(), 1]
+  xi = y_pred[all_dims(), 2]
+  y = y_true[all_dims(),1]
+  #Evaluate log-likelihood
+  ll1 = -(1 / xi + 1) * K$log(1 + xi * y / sigma)
+  
+  ll2 = -K$log(sigma)
+  
+  return(-(K$sum(ll1 + ll2)))
+}
+
+```
+
+```{r}
+GPD.model %>%
+  compile(optimizer = "adam", loss = GPD_nll)
+
+checkpoint <- callback_model_checkpoint(
+  paste0("checkpoints/GPD"),
+  monitor = "val_loss",
+  verbose = 0,
+  save_best_only = TRUE,
+  save_weights_only = TRUE,
+  mode = "min",
+  save_freq = "epoch"
+)
+
+history <- GPD.model %>% fit(
+  x = X_train.excess,
+  y = as.matrix(Y_train.excess),
+  batch_size = 16,
+  epochs = 50,
+    verbose = 0,
+  callback = list(checkpoint),
+  validation_split = 0.2
+)
+```
+
+```{r}
+plot(history)
+```
+
+
+Now load that best checkpoint:
+```{r}
+GPD.model <- GPD.model %>% load_model_weights_tf(
+                                 filepath = paste0("checkpoints/GPD"))
+```
+
+
+```{r}
+test_loss_GPD1 <- GPD.model %>% evaluate(X_test.excess,as.matrix(Y_test.excess), batch_size = length(Y_test.excess))
+print(paste0("test loss for GPD NN: ", test_loss_GPD1))
+```
+
+Get your predictions:
+
+```{r}
+test.GPD.estimates <- GPD.model %>% predict(X_test.excess)
+test.sigma = test.GPD.estimates[,1]; test.xi = test.GPD.estimates[,2]
+par(mfrow=c(1,2))
+hist(test.sigma,main="sigma estimates")
+hist(test.xi, main="xi estimates")
+```
+
+To quantify model fit, we will look at a pooled QQ plot. First, transform all exceedances to exponential margins.
+```{r}
+exp.data = apply(cbind(Y_test.excess, test.sigma, test.xi), 1, function(x) {
+  qexp(evd::pgpd(
+    x[1],
+    loc = 0,
+    scale = x[2],
+    shape = x[3]
+  ))
+})
+
+n_p=length(exp.data)
+ps=(1:n_p)/(n_p+1)
+qs=quantile(exp.data,ps,na.rm=T)
+
+plot(qexp(ps),qs,ylab="Fitted",xlab="Theoretical",main="",pch=20,asp=1)
+abline(a=0,b=1,col="red")
+
+```
+
+
+How does a linear model compare?
+```{r}
+GPD.linear.model <- keras_model_sequential() %>%
+  layer_dense(units = 2, activation = 'exponential') 
+GPD.linear.model %>%
+  compile(optimizer = "adam", loss = GPD_nll)
+
+history <- GPD.linear.model %>% fit(
+  x = X_train.excess,
+  y = as.matrix(Y_train.excess),
+  batch_size = 16,
+  epochs = 40,
+    verbose = 0,
+  validation_split = 0.2
+)
+```
+
+```{r}
+plot(history)
+```
+
+
+```{r}
+test_loss_GPD2 <-  GPD.linear.model %>% evaluate(X_test.excess,as.matrix(Y_test.excess), batch_size = length(Y_test.excess))
+print(paste0("test loss for linear GPD: ", test_loss_GPD2))
+```
+
+```{r}
+test.linearGPD.estimates <- GPD.linear.model %>% predict(X_test.excess)
+
+exp.data = apply(cbind(Y_test.excess, test.linearGPD.estimates[,1], test.linearGPD.estimates[,2]), 1, function(x) {
+  qexp(evd::pgpd(
+    x[1],
+    loc = 0,
+    scale = x[2],
+    shape = x[3]
+  ))
+})
+
+n_p=length(exp.data)
+ps=(1:n_p)/(n_p+1)
+qs=quantile(exp.data,ps,na.rm=T)
+
+plot(qexp(ps),qs,ylab="Fitted",xlab="Theoretical",main="",pch=20,asp=1)
+abline(a=0,b=1,col="red")
+
+```
+
+
+
+
+Plot predictions
+
+```{r, out.width="1500px"}
+par(mfrow = c(1, 3))
+
+t <- 3
+X.plot <- X[t, , , ]
+dim(X.plot) <- c(prod(dim(X.plot)[1:2]), dim(X.plot)[3])
+# Apply scaling
+X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
+  (X.plot[, ind] - means[ind]) / sds[ind])
+
+image(log(Y[t, , ]), main = "Observation",asp=0.625)
+
+NN.predictions <- GPD.model%>% predict(X.plot.scaled)
+sigma.predictions <- NN.predictions[,1]
+dim(sigma.predictions) <- dim(Y)[2:3]
+sigma.predictions[Y[t, , ] < 0] = NA
+#sigma.predictions[Y[t, , ] <= 0] = NA
+image(sigma.predictions, main = "sigma prediction",asp=0.625)
+
+xi.predictions <- NN.predictions[,2]
+dim(xi.predictions) <- dim(Y)[2:3]
+xi.predictions[Y[t, , ] < 0] = NA
+#xi.predictions[Y[t, , ] <= 0] = NA
+image(xi.predictions, main = "xi prediction",asp=0.625)
+```
+
+## More parsimonious modelling
+
+Three things in life are certain: death, taxes, and one of your reviewers questioning your modelling choices for $\xi$. Here we consider two simpler models for $\xi(x)$; one with much less covariate effect and one with $\xi$ constant.
+
+In the first case, we c0nstrain $\xi(x)$ to be less than one and let it depend on only the first covariate in `X`; this is the air temperature. To allow this, we need to build the Keras model in a non-sequential manner, and define input layers.
+
+```{r}
+input_sigma <- layer_input(shape = ncol(X_train.excess), name = 'input_sigma')
+input_xi <- layer_input(shape = 1, name = 'input_xi')
+
+sigma_model <- input_sigma %>%
+  layer_dense(units = 32, activation = 'sigmoid') %>%
+  layer_dense(units = 32, activation = 'sigmoid') %>%
+  layer_dense(units = 1, activation = 'exponential')
+xi_model <- input_xi %>%
+  layer_dense(units = 16, activation = 'relu') %>%
+  layer_dense(units = 16, activation = 'relu') %>%
+  layer_dense(units = 1, activation = 'sigmoid') 
+```
+
+Now, join the two models together and define the inputs and outputs:
+```{r}
+output <- layer_concatenate(c(sigma_model, xi_model))
+GPD.model2 <- keras_model(inputs = c(input_sigma, input_xi), outputs = output)
+
+
+GPD.model2 %>%
+  compile(optimizer = "adam", loss = GPD_nll)
+
+checkpoint <- callback_model_checkpoint(
+  paste0("checkpoints/GPD2"),
+  monitor = "val_loss",
+  verbose = 0,
+  save_best_only = TRUE,
+  save_weights_only = TRUE,
+  mode = "min",
+  save_freq = "epoch"
+)
+```
+
+```{r}
+history <- GPD.model2 %>% fit(
+  x = list(
+    "input_sigma" = X_train.excess,
+    "input_xi" = as.matrix(X_train.excess[, 1])
+  ),
+  y = as.matrix(Y_train.excess),
+  batch_size = 16,
+  epochs = 50,
+  verbose = 0,
+  callback = list(checkpoint),
+  validation_split = 0.2
+)
+```
+
+```{r}
+plot(history)
+```
+
+Now load that best checkpoint:
+```{r}
+GPD.model2 <- GPD.model2 %>% load_model_weights_tf(filepath = paste0("checkpoints/GPD2"))
+```
+
+Get your predictions:
+
+```{r}
+test.GPD.estimates <- GPD.model2 %>% predict(list(X_test.excess, as.matrix(X_test.excess[, 1])))
+test.sigma = test.GPD.estimates[, 1]
+test.xi = test.GPD.estimates[, 2]
+par(mfrow = c(1, 2))
+hist(test.sigma, main = "sigma estimates")
+hist(test.xi, main = "xi estimates")
+```
+
+
+```{r}
+exp.data = apply(cbind(Y_test.excess, test.sigma, test.xi), 1, function(x) {
+  qexp(evd::pgpd(
+    x[1],
+    loc = 0,
+    scale = x[2],
+    shape = x[3]
+  ))
+})
+
+n_p = length(exp.data)
+ps = (1:n_p) / (n_p + 1)
+qs = quantile(exp.data, ps, na.rm = T)
+
+plot(
+  qexp(ps),
+  qs,
+  ylab = "Fitted",
+  xlab = "Theoretical",
+  main = "",
+  pch = 20,
+  asp = 1
+)
+abline(a = 0, b = 1, col = "red")
+
+```
+
+```{r}
+test_loss_GPD3 <-  GPD.model2 %>% evaluate(
+  list(X_test.excess, as.matrix(X_test.excess[, 1])),
+  as.matrix(Y_test.excess),
+  batch_size = length(Y_test.excess)
+)
+print(paste0("test loss for GPD NN2: ", test_loss_GPD3))
+```
+
+```{r, out.width="1500px"}
+par(mfrow = c(1, 3))
+
+t <- 3
+X.plot <- X[t, , , ]
+dim(X.plot) <- c(prod(dim(X.plot)[1:2]), dim(X.plot)[3])
+# Apply scaling
+X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
+  (X.plot[, ind] - means[ind]) / sds[ind])
+
+image(log(Y[t, , ]), main = "Observation",asp=0.625)
+
+NN.predictions <- GPD.model2 %>% predict(list(X.plot.scaled, as.matrix(X.plot.scaled[, 1])))
+sigma.predictions <- NN.predictions[, 1]
+dim(sigma.predictions) <- dim(Y)[2:3]
+sigma.predictions[Y[t, , ] < 0] = NA
+#sigma.predictions[Y[t, , ] <= 0] = NA
+image(sigma.predictions, main = "sigma prediction",asp=0.625)
+
+xi.predictions <- NN.predictions[, 2]
+dim(xi.predictions) <- dim(Y)[2:3]
+xi.predictions[Y[t, , ] < 0] = NA
+#xi.predictions[Y[t, , ] <= 0] = NA
+image(xi.predictions, main = "xi prediction",asp=0.625)
+```
+
+In the last case, we will make $\xi(x)$ constant, by fixing the weights in the xi_model to zero.
+```{r}
+xi_model_fixed <- input_xi %>%
+  layer_dense(
+    units = 1,
+    weights = list(matrix(0, nrow = 1, ncol = 1), array(1)),
+    trainable = F
+  )  %>%
+  layer_dense(units = 1, activation = 'sigmoid') 
+```
+
+Now, join the two models together and define the inputs and outputs:
+```{r}
+
+
+GPD.model3 <- keras_model(inputs = c(input_sigma, input_xi),
+                          outputs = c(layer_concatenate(c(
+                            sigma_model, xi_model_fixed
+                          ))))
+
+
+GPD.model3 %>%
+  compile(optimizer = "adam", loss = GPD_nll)
+
+checkpoint <- callback_model_checkpoint(
+  paste0("checkpoints/GPD3"),
+  monitor = "val_loss",
+  verbose = 0,
+  save_best_only = TRUE,
+  save_weights_only = TRUE,
+  mode = "min",
+  save_freq = "epoch"
+)
+```
+
+```{r}
+history <- GPD.model3 %>% fit(
+  x = list(
+    "input_sigma" = X_train.excess,
+    "input_xi" = as.matrix(X_train.excess[, 1])
+  ),
+  y = as.matrix(Y_train.excess),
+  batch_size = 16,
+  epochs = 50,
+  verbose=0,
+  callback = list(checkpoint),
+  validation_split = 0.2
+)
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+GPD.model3 <- GPD.model3 %>% load_model_weights_tf(
+                                 filepath = paste0("checkpoints/GPD3"))
+```
+
+Get your predictions:
+
+```{r}
+test.GPD.estimates <- GPD.model3 %>% predict(list(X_test.excess, as.matrix(X_test.excess[, 1])))
+test.sigma = test.GPD.estimates[, 1]
+test.xi = test.GPD.estimates[1, 2]
+hist(test.sigma, main = "sigma estimates")
+print(paste0("xi estimate: ", test.xi))
+```
+
+
+```{r}
+exp.data = apply(cbind(Y_test.excess, test.sigma, test.xi), 1, function(x) {
+  qexp(evd::pgpd(
+    x[1],
+    loc = 0,
+    scale = x[2],
+    shape = x[3]
+  ))
+})
+
+n_p = length(exp.data)
+ps = (1:n_p) / (n_p + 1)
+qs = quantile(exp.data, ps, na.rm = T)
+
+plot(
+  qexp(ps),
+  qs,
+  ylab = "Fitted",
+  xlab = "Theoretical",
+  main = "",
+  pch = 20,
+  asp = 1
+)
+abline(a = 0, b = 1, col = "red")
+
+```
+
+
+```{r}
+test_loss_GPD4 <-  GPD.model3 %>% evaluate(
+  list(X_test.excess, as.matrix(X_test.excess[, 1])),
+  as.matrix(Y_test.excess),
+  batch_size = length(Y_test.excess)
+)
+
+print(paste0("test loss for GPD NN1: ", test_loss_GPD1))
+print(paste0("test loss for GPD NN2: ", test_loss_GPD3))
+print(paste0("test loss for GPD NN3 (homogeneous xi): ", test_loss_GPD4))
+print(paste0("test loss for linear GPD model: ", test_loss_GPD2))
+
+```
+
+```{r, out.width="1500px"}
+par(mfrow = c(1, 2))
+
+t <- 3
+X.plot <- X[t, , , ]
+dim(X.plot) <- c(prod(dim(X.plot)[1:2]), dim(X.plot)[3])
+# Apply scaling
+X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
+  (X.plot[, ind] - means[ind]) / sds[ind])
+
+image(log(Y[t, , ]), main = "Observation",asp=0.625)
+
+NN.predictions <- GPD.model3 %>% predict(list(X.plot.scaled, as.matrix(X.plot.scaled[, 1])))
+sigma.predictions <- NN.predictions[, 1]
+dim(sigma.predictions) <- dim(Y)[2:3]
+sigma.predictions[Y[t, , ] < 0] = NA
+#sigma.predictions[Y[t, , ] <= 0] = NA
+image(log(sigma.predictions), main = "sigma prediction",asp=0.625)
+
+
+```
+
+Interpretability via LIME
+
+
+```{r}
+library(lime)
+
+class (GPD.model3)
+model_type.keras.src.engine.functional.Functional <- function(x, ...) {
+  "regression"}
+
+predict_model.keras.src.engine.functional.Functional <- function (x, newdata, type, ...) {
+  pred <- x %>% predict(list(as.matrix(newdata),as.matrix(newdata[,1])))
+    
+  data.frame(pred[,1]) }
+
+df.train = as.data.frame(X_train.excess)
+names(df.train) <- cov.names
+explainer <- lime::lime (
+  x              = df.train, 
+  model          = GPD.model3,
+  bin_continuous = F)
+
+df.test = as.data.frame(X_test.excess)
+names(df.test) <- cov.names
+
+
+explanation <- lime::explain (
+   df.test[1:20,], 
+    n_features = 10,
+    explainer    = explainer)
+
+
+```
+
+```{r}
+
+plot_explanations (explanation)
+```
+
+```{r}
+inds = order(Y_test.excess,decreasing = T)
+explanation <- lime::explain (
+   df.test[inds[1:4],], 
+    n_features = 6,
+    explainer    = explainer)
+
+
+```
+
+```{r}
+plot_features (explanation)
+```
