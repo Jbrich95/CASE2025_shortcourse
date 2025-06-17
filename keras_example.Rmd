@@ -73,17 +73,18 @@ image(log(1 + Y[1, , ]), col = heat.colors(20, rev = T), asp = 0.625)
 
 We can also look at some of the covariates. Note that these maps are for the first month in the dataset.
 
-```{r, out.width="1200px"}
+```{r fig.height =3, fig.width = 6}
 par(mfrow = c(1, 2))
 image(X[1, , , 1],
       col = heat.colors(20, rev = T),
       main = "temperature",
       asp = 0.625)
 image(X[1, , , 2],
-      col = terrain.colors(20, rev = T),
+      col = terrain.colors(20, rev = F),
       main = "SPI",
       asp = 0.625)
 ```
+
 We will model extremes of positive $Y$, i.e., square-root burnt aree. Note that I'm completely removing all zero values - we won't be needing these here - and now our data are stored vectors, rather than arrays.
 ```{r}
 X.positive <- apply(X, 4, function(x) x[Y > 0])
@@ -186,8 +187,8 @@ checkpoint <- callback_model_checkpoint(
 
 history <- model %>% fit( x = X_train,
                           y = as.matrix(log(Y_train)),
-                          epochs=30,
-                          batch_size=32,
+                          epochs=50,
+                          batch_size=16,
                             verbose = 0,
                           callback = list(checkpoint),
                           validation_split=0.2)
@@ -249,7 +250,7 @@ abline(a = 0, b = 1)
 
 We may also want to see how the predictions change with the covariates. Below, we plot maps of the predicted $\log(Y)$ for a specific month $t$. Note that we have to use the original covariates here, rather than just those conditional on $Y>0$; this means we also need to remember to scale our original covariate vector, in the same was as we did above for the subset of covariates used in the model.
 
-```{r, out.width="1500px"}
+```{r fig.height =3, fig.width = 9}
 par(mfrow = c(1, 3))
 
 t <- 1
@@ -354,7 +355,7 @@ mean(Y_test < test.pred.theshold) # Should be close to tau
 
 We now plot maps of the estimated $\tau$-quantile for a specified month. Below, we take the third month, but feel free to change $t$ in the block of code.
 
-```{r, out.width="1500px"}
+```{r fig.height =3, fig.width = 6}
 par(mfrow = c(1, 2))
 
 t <- 3
@@ -555,7 +556,7 @@ abline(a=0,b=1,col="red")
 ```
 
 Now, let's look at maps of the estimated scale and shape parameters.
-```{r, out.width="1500px"}
+```{r fig.height =3, fig.width = 9}
 par(mfrow = c(1, 3))
 
 t <- 3
@@ -692,7 +693,7 @@ print(paste0("test loss for GPD NN2: ", test_loss_GPD3))
 
 Map your predictions
 
-```{r, out.width="1500px"}
+```{r fig.height =3, fig.width = 9}
 par(mfrow = c(1, 3))
 
 t <- 3
@@ -779,7 +780,7 @@ hist(test.sigma, main = "sigma estimates")
 print(paste0("xi estimate: ", test.xi))
 ```
 
-Assess your model fit
+Assess your model fit:
 
 ```{r}
 exp.data = apply(cbind(Y_test.excess, test.sigma, test.xi), 1, function(x) {
@@ -825,7 +826,7 @@ print(paste0("test loss for linear GPD model: ", test_loss_GPD2))
 Here are our final mapped estimates for the last model. 
 
 
-```{r, out.width="1500px"}
+```{r fig.height =3, fig.width = 6}
 par(mfrow = c(1, 2))
 
 t <- 3
@@ -835,14 +836,14 @@ dim(X.plot) <- c(prod(dim(X.plot)[1:2]), dim(X.plot)[3])
 X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
   (X.plot[, ind] - means[ind]) / sds[ind])
 
-image(log(Y[t, , ]), main = "Observation",asp=0.625)
+image(log(Y[t, , ]), main = "Observation", asp = 0.625)
 
 NN.predictions <- GPD.model3 %>% predict(list(X.plot.scaled, as.matrix(X.plot.scaled[, 1])))
 sigma.predictions <- NN.predictions[, 1]
 dim(sigma.predictions) <- dim(Y)[2:3]
 sigma.predictions[Y[t, , ] < 0] = NA
 #sigma.predictions[Y[t, , ] <= 0] = NA
-image(log(sigma.predictions), main = "sigma prediction",asp=0.625)
+image(log(sigma.predictions), main = "sigma prediction", asp = 0.625)
 
 xi.prediction <- NN.predictions[1, 2]
 print(paste("GPD model 3, estimated xi: ", xi.prediction))
@@ -852,52 +853,49 @@ print(paste("GPD model 3, estimated xi: ", xi.prediction))
 
 We now perform a post-hoc interpretability assessment of the final GPD model using Local Interpretable Model-Agnostic Explanations (LIME). 
 
+LIME works by finding a liner model that maps the covariates to the predictions from the MLP. In this case, the prediction will correspond to the GPD log-scale parameter. For one covariate sample of interest, say $\mathbf{x}^*$, we can create synthetic data by perturbing the values (by, e.g., adding noise to $\mathbf{x}^*$). For each synthetic data point, we find the predicted GPD log-scale parameter. Then, we perform weighted OLS to find a linear model that maps from the synthetic data to the predictions; synthetic values close to $\mathbf{x}^*$ are given more weight.
+
+We will use the `lime` R package. Below, I define a model class and prediction function to allow `lime` to interact with our Keras model. The predict_ function will output a data frame with the log of the scale parameter that is outputted from the Keras predict function.
+
 ```{r}
 library(lime)
 
 class (GPD.model3)
 model_type.keras.src.engine.functional.Functional <- function(x, ...) {
-  "regression"}
+  "regression"
+}
 
 predict_model.keras.src.engine.functional.Functional <- function (x, newdata, type, ...) {
-  pred <- x %>% predict(list(as.matrix(newdata),as.matrix(newdata[,1])))
-    
-  data.frame(pred[,1]) }
-
-df.train = as.data.frame(X_train.excess)
-names(df.train) <- cov.names
-explainer <- lime::lime (
-  x              = df.train, 
-  model          = GPD.model3,
-  bin_continuous = F)
-
-df.test = as.data.frame(X_test.excess)
-names(df.test) <- cov.names
-
-
-explanation <- lime::explain (
-   df.test[1:20,], 
-    n_features = 10,
-    explainer    = explainer)
-
+  pred <- x %>% predict(list(as.matrix(newdata), as.matrix(newdata[, 1])))
+  
+  data.frame(log(pred[, 1]))
+}
 
 ```
 
+Now, create an explainer object with our training data.
 ```{r}
+df.train = as.data.frame(X_train.excess)
+names(df.train) <- cov.names
+explainer <- lime::lime (x              = df.train,
+                         model          = GPD.model3,
+                         bin_continuous = F)
+
+df.test = as.data.frame(X_test.excess)
+names(df.test) <- cov.names
+```
+
+
+We can then get our explanations. Here I'm getting an explanation for the first 20 test covariate vectors. I will only focus on the top 10 most important features.
+```{r}
+explanation <- lime::explain (df.test[1:20, ], n_features = 10, explainer    = explainer)
 
 plot_explanations (explanation)
 ```
 
+We can also focus in on specific covariate vectors. Here, I look at the explanations for the four largest burnt areas in the test dataset.  
 ```{r}
-inds = order(Y_test.excess,decreasing = T)
-explanation <- lime::explain (
-   df.test[inds[1:4],], 
-    n_features = 6,
-    explainer    = explainer)
-
-
-```
-
-```{r}
+inds = order(Y_test.excess, decreasing = T)
+explanation <- lime::explain (df.test[inds[1:4], ], n_features = 6, explainer    = explainer)
 plot_features (explanation)
 ```
