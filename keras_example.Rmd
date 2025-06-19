@@ -21,7 +21,7 @@ library(tensorflow)
 
 # Installation
 
-To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
 
 ```{r, eval = F}
 remotes::install_github("rstudio/tensorflow")
@@ -801,7 +801,7 @@ plot(
   qs,
   ylab = "Fitted",
   xlab = "Theoretical",
-  main = "MLP modlel 3",
+  main = "MLP model 3",
   pch = 20,
   asp = 1
 )
