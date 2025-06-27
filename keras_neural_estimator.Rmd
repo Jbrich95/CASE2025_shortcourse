@@ -52,7 +52,7 @@ prior_alpha = function(K){
 ```
 
 ```{r}
-K <- 20000
+K <- 50000
 n <- 100
 alpha.train <- prior_alpha(K)
 
