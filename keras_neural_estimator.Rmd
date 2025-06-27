@@ -1,0 +1,129 @@
+---
+title: "CASE Workshop 2025: Shortcourse"
+output: html_document
+date: "2025-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+We will be using Google Colab to implement this deep extreme quantile regression example. First, go to [https://colab.research.google.com/](https://colab.research.google.com/). Click File -> New notebook in Drive, and then change the runtime to R (Runtime -> Change runtime type, then pick R in the dropdown). We will not be using GPUs, so keep the CPU box checked.
+
+```{r, include = F}
+library(keras)
+reticulate::use_condaenv("USWildfiresExtremes", required = T)
+sess = k_get_session()
+sess$list_devices()
+library(tensorflow)
+```
+
+# Installation
+
+To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+
+```{r, eval = F}
+remotes::install_github("rstudio/tensorflow")
+```
+
+```{r eval = F}
+install.packages(c("keras","lime","evd"))
+```
+
+Now, check to see if Keras has installed correctly.
+```{r }
+library("keras")
+is_keras_available()
+```
+
+Set seeds for reproducibility.
+```{r}
+set.seed(1)
+tensorflow::set_random_seed(1)
+```
+
+## Simulating training data
+
+```{r}
+prior_alpha = function(K){
+  rgamma(K , 1, 1)
+}
+```
+
+```{r}
+K <- 20000
+n <- 100
+alpha.train <- prior_alpha(K)
+
+Z.train <- t(apply(as.matrix(alpha.train), 1, function(x)
+  c(evd::rbvevd(n, dep = x, model = "hr"))))
+
+```
+
+
+## Build estimator
+```{r}
+model <- keras_model_sequential()
+
+model %>%
+  # Adds a densely-connected layer with 64 units to the model:
+  layer_dense(units = 64, activation = 'relu') %>%
+  
+  # Add another:
+  layer_dense(units = 64, activation = 'relu') %>%
+  
+  
+  # Add a final layer with 1 ouput
+  layer_dense(units = 1, activation = 'exponential')
+```
+
+Now, compile the model with a loss function and an optimizer. Here we use Adam with standard hyper-parameters, and the MSE loss function to target the posterior mean.
+
+```{r}
+model %>% compile(
+  optimizer = "adam",
+  loss = "mean_squared_error"
+)
+```
+
+
+Now fit the model. We train the model for 100 epochs, with an 80/20 validation data split. The default minibatch size is 16. Note that the model gradients are not evaluated on the validation data, and instead we can use the validation loss (i.e., the loss evaluated on the validation data) to motivate hyperparameters (e.g., neural net architecture) choices.
+
+If you choose to cancel training (ctrl + C, or the big red stop button), then the current model state will be saved and accessible. Feel free to set `verbose = 1` to track the training.
+
+```{r}
+early.stopping <-   callback_early_stopping(monitor = "val_loss", patience = 10)
+
+history <- model %>% fit(
+  x = Z.train,
+  y = as.matrix(alpha.train),
+  callbacks = list(early.stopping),
+  epochs = 100,
+  validation_split = 0.2,
+  shuffle = T
+)
+```
+Plot the training history, and print the summary of the architecture.
+```{r}
+plot(history)
+summary(model)
+```
+
+```{r}
+K.test <- 1000
+alpha.test <- prior_alpha(K.test)
+
+Z.test <- t(apply(as.matrix(alpha.test), 1, function(x)
+  c(evd::rbvevd(n, dep = x, model = "hr"))))
+```
+
+```{r}
+predictions <- model %>% predict(Z.test)
+```
+
+```{r}
+plot(alpha.test, predictions)
+abline(a = 0, b = 1)
+```
+

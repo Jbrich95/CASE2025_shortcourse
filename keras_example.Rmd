@@ -28,7 +28,7 @@ remotes::install_github("rstudio/tensorflow")
 ```
 
 ```{r eval = F}
-install.packages("keras")
+install.packages(c("keras","lime","evd"))
 ```
 
 Now, check to see if Keras has installed correctly.
