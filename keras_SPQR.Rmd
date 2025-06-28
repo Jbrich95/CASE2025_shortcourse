@@ -1,0 +1,248 @@
+---
+title: 'CASE Workshop 2025: SPQR'
+output:
+  html_document: default
+  pdf_document: default
+date: "2025-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+We will be using Google Colab for this example on density regression using semi-parametric quantile regression (SPQR). First, go to <https://colab.research.google.com/>. Click File -\> New notebook in Drive, and then change the runtime to R (Runtime -\> Change runtime type, then pick R in the dropdown). We will not be using GPUs, so keep the CPU box checked.
+
+```{r, include = F}
+library(keras)
+library(keras3)
+reticulate::use_virtualenv("myenv", required = T)
+```
+
+# Installation
+
+To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here <https://tensorflow.rstudio.com/install/>. We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+
+```{r, eval = F}
+remotes::install_github("rstudio/tensorflow")
+```
+
+```{r eval = F}
+install.packages(c("keras","splines2"))
+```
+
+Now, check to see if Keras has installed correctly.
+
+```{r }
+library("keras")
+is_keras_available()
+```
+
+Set seeds for reproducibility.
+
+```{r}
+tensorflow::set_random_seed(1)
+```
+
+## Helper functions for SPQR
+
+The most important function in the second one, which evaluates the SPQR negative log-likelihood loss function. Since the SPQR likelihood includes M- and I-splines, the first function evaluates those. The final function is a predict function which is a wrapper around the predict function of keras. This function is used to predict PDFs, CDFs, and QFs associated with SPQR fits
+
+```{r}
+
+# Evaluate basis functions
+basis <- function(y,K,knots, integral=FALSE){
+  B     <- splines2::mSpline(y, knots = knots, 
+                   Boundary.knots=c(0,1),
+                   intercept=TRUE, degree = 2,
+                   integral=integral)
+  return(t(B))
+}
+
+# Negative log-likelihood for SPQR
+nloglik_loss_SPQR  = function (y_true, y_pred){
+  K <- backend()
+  numbasis <- k_int_shape(y_true)[[2]]
+  # print(numbasis)
+  probs <- y_pred[,1:numbasis]
+  sumprod <- k_sum(y_true*probs,axis=2)
+  spqr_loss <- -K$sum(K$log(sumprod))
+  return(spqr_loss)
+}
+
+# Predict function used on fitted SPQR models
+predict.SPQR <- function(model,X,Y=NULL,nY=101,tau=0.5,type='QF'){
+  pred        <- as.matrix(model(X))
+  n <- nrow(pred)
+  ntau = length(tau)
+  n.knots <- ncol(pred)
+  if(is.null(Y) | type=='QF')
+    Y <- seq(0,1,length.out = nY)
+  B <- (basis(Y , n.knots,knots, integral = (type!='PDF')))
+  if(ncol(B)!=n)
+    df1  <- pred%*%B
+  if(ncol(B)==n)
+    df1  <- colSums(B*t(pred))
+  if(type!='QF'){
+    return(df1)
+  }
+  if(type=='QF'){
+    qf1 = matrix(NA,n,ntau)
+    for(i in 1:n)
+      qf1[i,] <- stats::approx(df1[i,], Y, xout=tau, ties = list("ordered", min))$y
+    return(qf1)
+  }
+}
+```
+
+Other than the neural network hyperparameters, the number of basis function knots is the only other hyperparameter of the model.
+
+```{r}
+n.knots <- 15
+knots = seq(1/(n.knots-2), 1-1/(n.knots-2), length=n.knots-3)
+```
+
+## Data import and pre-processing
+
+```{r, include=FALSE}
+weather <- readRDS("~/GitHub/WACE_shortcourse/weather2.RDS")
+head(weather)
+```
+
+```{r, eval=F}
+weather <- readRDS("weather2.RDS")
+head(weather)
+```
+
+```{r}
+tmax <- weather$tmax - 273 #convert tmax to celsius
+pr <- log(weather$pr + 0.0001) #convert pr to log-scale
+plot(tmax,pr,pch=20)
+n_total <- length(tmax)
+train_ind <- sample(1:n_total,ceiling(0.8*n_total)) #80% training data
+
+tmax_range <- range(tmax)
+y1 <- (tmax - tmax_range[1])/diff(tmax_range) # Rescale tmax to [0,1]
+X <- cbind(1,pr)
+
+# train and validation data
+y1_train <- y1[train_ind]
+y1_valid <- y1[-train_ind]
+
+# For unconditional density, with only intercept
+X1_train <- matrix(X[train_ind,1],ncol = 1)
+X1_valid <- matrix(X[-train_ind,1],ncol = 1)
+
+# For conditional density of tmax with intercept and log-pr
+X2_train <- X[train_ind,1:2]
+X2_valid <- X[-train_ind,1:2]
+
+# Basis functions, whic are the 'output' from the neural networks
+M_basis_train1 <- t(basis(y1_train,n.knots,knots))
+I_basis_train1 <- t(basis(y1_train,n.knots,knots, integral = TRUE))
+
+M_basis_valid1 <- t(basis(y1_valid,n.knots,knots))
+I_basis_valid1 <- t(basis(y1_valid,n.knots,knots, integral = TRUE))
+```
+
+## Modeling the unconditional distribution of temperature
+
+**Building the model:** This follows very similar to the previous examples. We consider a very simple model with one input dimension (the intercept), and output dimensions corresponding to the number of knots. In between there is a single hidden layer with 32 neurons and a `sigmoid` activation function. The output layer has a `softmax` activation function which ensures that the output is 15 probabilities that sum to 1.
+
+```{r}
+input1 <- keras_input(shape=1, name = 'covariates')
+x_1 <- layer_dense(input1, units = 32, activation = 'sigmoid')
+probs <- layer_dense(x_1, n.knots, activation = 'softmax', name = "probs")
+
+
+# out_concat <- layer_identity(probs, name='outs')
+model1 <- keras_model(inputs = input1, 
+                     outputs = probs, name = "SPQR")
+summary(model1)
+
+model1 |> compile(
+  loss = nloglik_loss_SPQR, #SPQR loss function
+  optimizer = optimizer_adam(learning_rate = 0.001)
+)
+savename <- paste0('spqr_tmax_1')
+checkpoint <- callback_model_checkpoint(filepath=savename, monitor = "val_loss",
+                                        save_best_only = TRUE, save_weights_only = TRUE, mode = "min",
+                                        save_freq = "epoch")
+history <- model1 |> fit(
+  list(covariates = X1_train, y = y1_train),
+  list(probs = M_basis_train1),
+  epochs = 100,
+  batch_size = 32,
+  verbose=0,
+  callback=list(checkpoint,callback_early_stopping(monitor = "val_loss",
+                                                   min_delta = 0, patience = 5)),
+  validation_data=list(
+    list(covariates = X1_valid, y = y1_valid),
+    list(probs = M_basis_valid1))
+)
+
+```
+
+**Diagnostics**: We first do a QQ-plot on the validation data, which shows a good fit.
+
+```{r}
+ycdf = predict.SPQR(model1,X=X1_valid,Y=y1_valid,type = 'CDF')
+qqplot(runif(length(ycdf)),ycdf)
+abline(0,1)
+```
+
+**Predictions**: Since there is only the intercept, we basically predict f(y)
+
+```{r}
+ypred = predict.SPQR(model1,X=X1_train,type = 'PDF')
+plot(density(y1_train))
+lines(seq(0,1,length.out=101),
+      ypred[1,],lty=2,col='blue','l')
+```
+
+## Modeling the conditional distribution of `tmax|pr`
+
+The input to the neural network is now both an intercept term and the precipitation. The methodology is otherwise identical.
+
+```{r}
+input1 <- keras_input(shape=2, name = 'covariates')
+x_1 <- layer_dense(input1, units = 32, activation = 'sigmoid')
+probs <- layer_dense(x_1, n.knots, activation = 'softmax', name = "probs")
+
+
+# out_concat <- layer_identity(probs, name='outs')
+model1 <- keras_model(inputs = input1, 
+                     outputs = probs, name = "SPQR")
+summary(model1)
+
+
+model1 |> compile(
+  loss = nloglik_loss_SPQR,
+  optimizer = optimizer_adam(learning_rate = 0.0001)
+)
+savename <- paste0('spqr_tmax_ff')
+checkpoint <- callback_model_checkpoint(filepath=savename, monitor = "val_loss",
+                                        save_best_only = TRUE, save_weights_only = TRUE, mode = "min",
+                                        save_freq = "epoch")
+history <- model1 |> fit(
+  list(covariates = X2_train, y = y1_train),
+  list(probs = M_basis_train1),
+  epochs = 100,
+  batch_size = 32,
+  verbose=0,
+  callback=list(checkpoint,callback_early_stopping(monitor = "val_loss",
+                                                   min_delta = 0, patience = 5)),
+  validation_data=list(
+    list(covariates = X2_valid, y = y1_valid),
+    list(probs = M_basis_valid1))
+)
+```
+
+**Diagnostics**: We do a goodness of fit as before.
+
+```{r}
+ycdf = predict.SPQR(model1,X=X2_valid,Y=y1_valid,type = 'CDF')
+qqplot(runif(length(ycdf)),ycdf)
+abline(0,1)
+```
