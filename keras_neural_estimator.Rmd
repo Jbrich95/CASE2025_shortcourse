@@ -1,6 +1,8 @@
 ---
-title: "CASE Workshop 2025: Shortcourse"
-output: html_document
+title: 'CASE Workshop 2025: Shortcourse'
+output:
+  pdf_document: default
+  html_document: default
 date: "2025-06-10"
 ---
 
@@ -45,19 +47,25 @@ tensorflow::set_random_seed(1)
 
 ## Simulating training data
 
+We build a neural estiamtor for the posterior mean of a bivariate Husler-Reiss distribution.
+
+First, set a prior on the dependence parameter, here denoted by $\alpha$.
 ```{r}
-prior_alpha = function(K){
+prior_alpha = function(K) {
   rgamma(K , 1, 1)
 }
 ```
 
+Now, generate some training data. We use $n=64$ replicates as this will coincide with the number of observations we have.
 ```{r}
 K <- 50000
-n <- 100
+n <- 64
 alpha.train <- prior_alpha(K)
 
 Z.train <- t(apply(as.matrix(alpha.train), 1, function(x)
-  c(evd::rbvevd(n, dep = x, model = "hr"))))
+  c(evd::rbvevd(
+    n, dep = x, model = "hr"
+  ))))
 
 ```
 
@@ -100,6 +108,7 @@ history <- model %>% fit(
   y = as.matrix(alpha.train),
   callbacks = list(early.stopping),
   epochs = 100,
+  verbose = 0,
   validation_split = 0.2,
   shuffle = T
 )
@@ -109,21 +118,111 @@ Plot the training history, and print the summary of the architecture.
 plot(history)
 summary(model)
 ```
+Now, let's see how well the estimator performs. We generate 1000 test datasets and compare the true values of $\alpha$ with the predictions.
 
 ```{r}
 K.test <- 1000
 alpha.test <- prior_alpha(K.test)
 
 Z.test <- t(apply(as.matrix(alpha.test), 1, function(x)
-  c(evd::rbvevd(n, dep = x, model = "hr"))))
-```
+  c(evd::rbvevd(
+    n, dep = x, model = "hr"
+  ))))
 
-```{r}
 predictions <- model %>% predict(Z.test)
-```
 
-```{r}
 plot(alpha.test, predictions)
 abline(a = 0, b = 1)
 ```
 
+# Get annual maxima
+
+Now, we apply the estimator to real data. We will analyse annual temperature maxima.
+
+Extract the maxima from two sites.
+
+```{r}
+data <- readRDS("weather.RDS")
+data = data[data$loc == 1 | data$loc == 2, ]
+years = unique(format(as.Date(data$time), "%Y"))
+
+int <- 1
+tmax <- matrix(0, nrow = length(years), ncol = 2)
+
+for (t in years) {
+  inds = which(format(as.Date(data$time), "%Y") == t & data$loc == 1)
+  tmax[int, 1] = max(data$tmax[inds])
+  
+  inds = which(format(as.Date(data$time), "%Y") == t &
+                 data$loc == 2)
+  tmax[int, 2] = max(data$tmax[inds])
+  
+  int = int + 1
+}
+```
+
+Here we see strong asymptotic dependence in the bivariate temperature maxima.
+```{r}
+plot(tmax)
+```
+
+We first transform the data onto standard Gumbel margins, as this was the same marginal scale used for generating the training data.
+```{r}
+unif = function(x)
+  rank(x) / (length(x) + 1)
+
+tmax.Gumbel = evd::qgev(apply(tmax, 2, unif))
+plot(tmax.Gumbel)
+```
+
+Get your estimate for the dataset.
+```{r}
+alpha.est <- model %>% predict(t(as.matrix(c(tmax.Gumbel))))
+```
+
+We can visualise the model fit using density contours. The model appears to fit the data quite well.
+```{r}
+plot(tmax.Gumbel)
+sims <- evd::rbvevd(100000, alpha.est, model = "hr")
+biv_kde <- MASS::kde2d(sims[, 1], sims[, 2])
+contour(biv_kde, add = T, col = "red")
+```
+
+The estimator is amortised, so can be reapplied to new data without retraining. To illustrate this, we generate a new dataset with locations further apart; see now that the data appear to exhibit asymptotic independence
+
+```{r}
+data <- readRDS("weather.RDS")
+data = data[data$loc == 1 | data$loc == 25, ]
+years = unique(format(as.Date(data$time), "%Y"))
+
+int <- 1
+tmax <- matrix(0, nrow = length(years), ncol = 2)
+
+for (t in years) {
+  inds = which(format(as.Date(data$time), "%Y") == t & data$loc == 1)
+  tmax[int, 1] = max(data$tmax[inds])
+  
+  inds = which(format(as.Date(data$time), "%Y") == t &
+                 data$loc == 25)
+  tmax[int, 2] = max(data$tmax[inds])
+  
+  int = int + 1
+}
+
+tmax.Gumbel = evd::qgev(apply(tmax, 2, unif))
+plot(tmax.Gumbel)
+```
+
+Let's get the parameter estimate.
+```{r}
+alpha.est <- model %>% predict(t(as.matrix(c(tmax.Gumbel))))
+```
+
+```{r}
+plot(tmax.Gumbel)
+sims <- evd::rbvevd(100000, alpha.est, model="hr")
+biv_kde <- MASS::kde2d(sims[,1], sims[,2])
+contour(biv_kde, add = T,col="red")
+```
+
+The estimator here is specific to a dataset with $n=64$ replicates, but we can build estimators that are applicable to general sample sizes; see, e.g., the [NeuralEstimators](https://cran.r-project.org/web/packages/NeuralEstimators/vignettes/NeuralEstimators.html) package.
