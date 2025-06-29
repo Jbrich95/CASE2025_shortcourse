@@ -1,8 +1,8 @@
 ---
 title: 'CASE Workshop 2025: Shortcourse'
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 date: "2025-06-10"
 ---
 
