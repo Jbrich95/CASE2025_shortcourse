@@ -35,7 +35,6 @@ install.packages(c("keras","splines2"))
 Now, check to see if Keras has installed correctly.
 
 ```{r }
-library("keras")
 is_keras_available()
 ```
 
@@ -149,6 +148,7 @@ I_basis_valid1 <- t(basis(y1_valid,n.knots,knots, integral = TRUE))
 ## Modeling the marginal distribution of `tmax`
 
 **Building the model:** This follows very similar to the previous examples. We consider a very simple model with one input dimension (the intercept), and output dimensions corresponding to the number of knots. In between there is a single hidden layer with 32 neurons and a `sigmoid` activation function. The output layer has a `softmax` activation function which ensures that the output is 15 probabilities that sum to 1.
+
 
 ```{r}
 input1 <- keras_input(shape=1, name = 'covariates')
