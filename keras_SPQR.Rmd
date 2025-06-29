@@ -146,7 +146,7 @@ M_basis_valid1 <- t(basis(y1_valid,n.knots,knots))
 I_basis_valid1 <- t(basis(y1_valid,n.knots,knots, integral = TRUE))
 ```
 
-## Modeling the unconditional distribution of temperature
+## Modeling the marginal distribution of `tmax`
 
 **Building the model:** This follows very similar to the previous examples. We consider a very simple model with one input dimension (the intercept), and output dimensions corresponding to the number of knots. In between there is a single hidden layer with 32 neurons and a `sigmoid` activation function. The output layer has a `softmax` activation function which ensures that the output is 15 probabilities that sum to 1.
 
@@ -203,7 +203,7 @@ lines(seq(0,1,length.out=101),
 
 ## Modeling the conditional distribution of `tmax|pr`
 
-The input to the neural network is now both an intercept term and the precipitation. The methodology is otherwise identical.
+**Building the model:** The input to the neural network is now both an intercept term and the precipitation. The methodology is otherwise identical.
 
 ```{r}
 input1 <- keras_input(shape=2, name = 'covariates')
@@ -245,4 +245,51 @@ history <- model1 |> fit(
 ycdf = predict.SPQR(model1,X=X2_valid,Y=y1_valid,type = 'CDF')
 qqplot(runif(length(ycdf)),ycdf)
 abline(0,1)
+```
+
+### Conditional distributions of `tmax|pr`
+
+```{r}
+X_pred <- matrix(c(1,log(0.0001),1,log(1),1,log(6)),ncol=2,byrow = T)
+ypred = predict.SPQR(model1,X=X_pred,type = 'PDF')
+
+#pr=0mm
+plot(c(0:100)/100,ypred[1,],'l',col='black',xlab = 'y',ylab = 'f(y|x)') 
+
+#pr=1mm
+lines(c(0:100)/100,ypred[2,],'l',col='red')
+
+#pr=6mm
+lines(c(0:100)/100,ypred[3,],'l',col='blue') 
+```
+
+### Marginal distribution of `tmax`
+
+```{r}
+pr_range <- range(pr)
+# -9.210340  3.440484
+
+pr_seq <- seq(pr_range[1],pr_range[2],length.out = 1000)
+X_pred <- cbind(rep(1,1000),pr_seq)
+ypred <- predict.SPQR(model1,X=X_pred,type = 'PDF')
+ypred <- apply(ypred,2,mean)
+plot(density(y1_train))
+lines(seq(0,1,length.out=101),
+      ypred,lty=2,col='blue','l')
+```
+
+### Probability and quantile estimates
+
+```{r}
+X_pred <- matrix(c(1,log(0.0001),1,log(1),1,log(6)),ncol=2,byrow = T)
+
+# Median temperature when there is no rainfall
+X0 <- matrix(X_pred[1,],nrow = 1)
+y0 <- predict.SPQR(model1,X=X0,type = 'QF',tau=0.5)
+y0*diff(tmax_range) + tmax_range[1]
+
+# Probability that tmax will be greater than 35 degress when there is no rainfall
+yyy <- (35-tmax_range[1])/diff(tmax_range)
+ycdf <- predict.SPQR(model1,X=X0,Y=yyy,type = 'CDF')
+1 - ycdf
 ```
