@@ -1,5 +1,5 @@
 ---
-title: 'CASE Workshop 2025: Shortcourse'
+title: 'CASE Workshop 2025: Neural estimators'
 output:
   html_document: default
   pdf_document: default
@@ -23,10 +23,13 @@ To install Keras, run the following code. Colab already has Python and Tensorflo
 
 ```{r eval = F}
 install.packages(c("keras3","lime","evd"))
+library(keras3)
 ```
 
-```{r }
-library("keras3")
+```{r, include=F}
+# reticulate::use_virtualenv("myenv", required = T)
+library(tensorflow)
+library(keras3)
 ```
 
 Set seeds for reproducibility.
