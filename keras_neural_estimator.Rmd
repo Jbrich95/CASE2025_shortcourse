@@ -13,30 +13,20 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Introduction
 We will be using Google Colab to implement this deep extreme quantile regression example. First, go to [https://colab.research.google.com/](https://colab.research.google.com/). Click File -> New notebook in Drive, and then change the runtime to R (Runtime -> Change runtime type, then pick R in the dropdown). We will not be using GPUs, so keep the CPU box checked.
 
-```{r, include = F}
-library(keras)
-reticulate::use_condaenv("USWildfiresExtremes", required = T)
-sess = k_get_session()
-sess$list_devices()
-library(tensorflow)
-```
+
 
 # Installation
 
 To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
 
-```{r, eval = F}
-remotes::install_github("rstudio/tensorflow")
-```
+
 
 ```{r eval = F}
-install.packages(c("keras","lime","evd"))
+install.packages(c("keras3","lime","evd"))
 ```
 
-Now, check to see if Keras has installed correctly.
 ```{r }
-library("keras")
-is_keras_available()
+library("keras3")
 ```
 
 Set seeds for reproducibility.

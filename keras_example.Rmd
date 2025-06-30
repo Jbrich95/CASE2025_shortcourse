@@ -11,30 +11,20 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Introduction
 We will be using Google Colab to implement this deep extreme quantile regression example. First, go to [https://colab.research.google.com/](https://colab.research.google.com/). Click File -> New notebook in Drive, and then change the runtime to R (Runtime -> Change runtime type, then pick R in the dropdown). We will not be using GPUs, so keep the CPU box checked.
 
-```{r, include = F}
-library(keras)
-reticulate::use_condaenv("USWildfiresExtremes", required = T)
-sess = k_get_session()
-sess$list_devices()
-library(tensorflow)
-```
+
 
 # Installation
 
 To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
 
-```{r, eval = F}
-remotes::install_github("rstudio/tensorflow")
-```
 
 ```{r eval = F}
-install.packages(c("keras","lime","evd"))
+install.pack ages(c("keras3","lime","evd"))
 ```
 
 Now, check to see if Keras has installed correctly.
 ```{r }
-library("keras")
-is_keras_available()
+library("keras3")
 ```
 
 Set seeds for reproducibility.
@@ -287,10 +277,9 @@ Loss functions must be differentiable. To ensure this is the case, we build them
 ```{r}
 tau <- 0.8 # Set quantile level
 tilted_loss <- function(y_true, y_pred) {
-  K <- backend()
-  
+
   error = y_true - y_pred
-  return(K$mean(K$maximum(tau * error, (tau - 1) * error)))
+  return(op_mean(op_maximum(tau * error, (tau - 1) * error)))
 }
 ```
 
@@ -416,17 +405,16 @@ Now, let's write the custom loss function. This will correspond to the negative 
 
 # Note that we are treating the first dimension of the output (y_pred) as sigma, and the second as xi
 GPD_nll <- function(y_true, y_pred) {
-  K <- backend()
-  
+
   sigma = y_pred[all_dims(), 1] #I apply the all_dims() function here to ensure that everything is a vector
   xi = y_pred[all_dims(), 2]
   y = y_true[all_dims(), 1]
   #Evaluate log-likelihood
-  ll1 = -(1 / xi + 1) * K$log(1 + xi * y / sigma)
+  ll1 = -(1 / xi + 1) * op_log(1 + xi * y / sigma)
   
-  ll2 = -K$log(sigma)
+  ll2 = op_$log(sigma)
   
-  return(-(K$sum(ll1 + ll2)))
+  return(-(op_sum(ll1 + ll2)))
 }
 
 ```
