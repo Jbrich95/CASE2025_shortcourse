@@ -23,7 +23,7 @@ library(keras3)
 
 # Installation
 
-To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here <https://tensorflow.rstudio.com/install/>. We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+To install Keras3, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here.
 
 ```{r, eval = F}
 remotes::install_github("rstudio/tensorflow")
@@ -34,16 +34,15 @@ install.packages(c("keras3","splines2"))
 library(keras3)
 ```
 
-
-Set seeds for reproducibility.
+Set seed for reproducibility.
 
 ```{r}
 tensorflow::set_random_seed(1)
 ```
 
-## Helper functions for SPQR
+## Key functions for SPQR
 
-The most important function in the second one, which evaluates the SPQR negative log-likelihood loss function. Since the SPQR likelihood includes M- and I-splines, the first function evaluates those. The final function is a predict function which is a wrapper around the predict function of keras. This function is used to predict PDFs, CDFs, and QFs associated with SPQR fits
+The most important function in the second one, which evaluates the SPQR negative log-likelihood loss function. Since the SPQR likelihood includes M- and I-splines, the first function evaluates those. The final function is a predict function which is a wrapper around the predict function of keras. This function is used to predict PDFs, CDFs, and QFs associated with SPQR fits.
 
 ```{r}
 # Evaluate basis functions
@@ -90,7 +89,7 @@ predict.SPQR <- function(model,X,Y=NULL,nY=101,tau=0.5,type='QF'){
 }
 ```
 
-Other than the neural network hyperparameters, the number of basis function knots is the only other hyperparameter of the model.
+**SPQR parameters**: Other than the neural network hyperparameters, the number of basis function knots is the only thing that needs to be set. Values between 10-25 work well in practice.
 
 ```{r}
 n.knots <- 15
@@ -98,6 +97,8 @@ knots = seq(1/(n.knots-2), 1-1/(n.knots-2), length=n.knots-3)
 ```
 
 ## Data import and pre-processing
+
+This is wildfire data used by Lawler and Shaby (2024). In particular, we use the tmax and precip data for a specific L3 ecoregion in the US.
 
 ```{r, include=FALSE}
 weather <- readRDS("../WACE_shortcourse/weather2.RDS")
@@ -108,6 +109,8 @@ head(weather)
 weather <- readRDS("weather2.RDS")
 head(weather)
 ```
+
+Instead of modeling the raw precip, we use a log-transform. The data is split in an 80/20 ration as training and testing.
 
 ```{r}
 mnth <- weather$month
@@ -143,8 +146,7 @@ I_basis_test <- t(basis(y1_test,n.knots,knots, integral = TRUE))
 
 ## Modeling the marginal distribution of `tmax`
 
-**Building the model:** This follows very similar to the previous examples. We consider a very simple model with one input dimension (the intercept), and output dimensions corresponding to the number of knots. In between there is a single hidden layer with 32 neurons and a `sigmoid` activation function. The output layer has a `softmax` activation function which ensures that the output is 15 probabilities that sum to 1.
-
+**Building the model:** This follows very similar to the previous examples. We consider a very simple model with one input dimension (the intercept), and output dimensions corresponding to the number of knots. In between there is a single hidden layer with 32 neurons and a `relu` activation function. The output layer has a `softmax` activation function which ensures that the output is 15 probabilities that sum to 1.
 
 ```{r}
 model <- keras_model_sequential()
@@ -154,7 +156,7 @@ model %>%
   layer_dense(units = 32, input_shape = c(1), activation = 'relu') %>%
   
   # Add a final layer with 1 ouput
-  layer_dense(units = 15, activation = 'softmax')
+  layer_dense(units = n.knots, activation = 'softmax')
 ```
 
 ```{r}
@@ -164,6 +166,8 @@ model %>% compile(
   )
 model
 ```
+
+Note that the response is not `y` but the M-spline basis functions.
 
 ```{r}
 early.stopping <-   callback_early_stopping(monitor = "val_loss", patience = 5)
@@ -190,7 +194,7 @@ qqplot(runif(length(ycdf)),ycdf)
 abline(0,1)
 ```
 
-**Predictions**: Since there is only the intercept, we basically predict f(y)
+**Predictions**: Since there is only the intercept, we just predict f(y)
 
 ```{r}
 ypred = predict.SPQR(model,X=X1_train,type = 'PDF')
@@ -244,6 +248,8 @@ abline(0,1)
 
 ### Conditional distributions of `tmax|pr`
 
+We plot the conditional distribution of tmax for three different precip regimes - no rainfall, 1mm of rainfall, and 6mm of rainfall.
+
 ```{r}
 X_pred <- matrix(c(1,log(0.0001),1,log(1),1,log(6)),ncol=2,byrow = T)
 ypred = predict.SPQR(model1,X=X_pred,type = 'PDF')
@@ -260,6 +266,8 @@ lines(c(0:100)/100,ypred[3,],'l',col='blue')
 
 ### Marginal distribution of `tmax`
 
+To evaluate the marginal density, we sample a range of `pr` values, and use marginalization to get the unconditional distribution.
+
 ```{r}
 pr_range <- range(pr)
 # -9.210340  3.440484
@@ -274,6 +282,8 @@ lines(seq(0,1,length.out=101),
 ```
 
 ### Probability and quantile estimates
+
+The closed form of the CDF means that we can evaluate probability statements associated with the conditional (and marginal) distributions. We can also estimate quantiles.
 
 ```{r}
 X_pred <- matrix(c(1,log(0.0001),1,log(1),1,log(6)),ncol=2,byrow = T)
