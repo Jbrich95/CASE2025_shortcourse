@@ -17,7 +17,7 @@ We will be using Google Colab to implement this deep extreme quantile regression
 
 # Installation
 
-To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). 
 
 
 
@@ -27,7 +27,6 @@ library(keras3)
 ```
 
 ```{r, include=F}
-# reticulate::use_virtualenv("myenv", required = T)
 library(tensorflow)
 library(keras3)
 ```

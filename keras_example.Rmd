@@ -15,11 +15,15 @@ We will be using Google Colab to implement this deep extreme quantile regression
 
 # Installation
 
-To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). We also have a short tutorial here: [https://github.com/callumbarltrop/DeepGaugePublic](https://github.com/callumbarltrop/DeepGaugePublic/blob/main/README.md).
+To install Keras, run the following code. Colab already has Python and Tensorflow modules installed, so we do not need to do anything particularly complicated here. If installing Keras for R on your own machine, see the tutorial here [https://tensorflow.rstudio.com/install/](https://tensorflow.rstudio.com/install/). 
 
 
 ```{r eval = F}
-install.pack ages(c("keras3","lime","evd"))
+install.packages(c("keras3","lime","evd"))
+```
+
+```{r include = F}
+reticulate::use_virtualenv("r-keras")
 ```
 
 Now, check to see if Keras has installed correctly.
@@ -40,8 +44,9 @@ We will be downloading a dataset of US wildfires from my R package, which is hos
 We take only the last 5 years of the dataset (there's seven months per year, so 7*5 = 35 observations).
 
 ```{r}
-file_url <- "https://github.com/Jbrich95/pinnEV/blob/main/data/USWild.rda?raw=true"
-load(url(file_url))
+#file_url <- "https://github.com/Jbrich95/pinnEV/blob/main/data/USWild.rda?raw=true"
+#load(url(file_url))
+load("USWild.rda")
 Y = USWild$BA[127:161, , ]
 X = array(dim = c(35, 129, 61, 22))
 X[, , , 1] = USWild$X$X.t2m[127:161, , , ]
@@ -49,7 +54,7 @@ X[, , , 2] = USWild$X$X.SPI[127:161, , , ]
 X[, , , -c(1, 2)] = USWild$X$X.N[127:161, , , 1:20]
 ```
 
-The data are arranged on a regular spatial grid, and we have 22 covariates. The first two covariates are monthly air temperature (t2m) are standardised preciptation index (SPI); the remaing covariates are a mixture of metereological and land cover descriptors.
+The data are arranged on a regular spatial grid, and we have 22 covariates. The first two covariates are monthly air temperature (t2m) are standardised precipitation index (SPI); the remaining covariates are a mixture of meteorological and land cover descriptors.
 ```{r}
 dim(X)
 cov.names <- c("t2m", "SPI", USWild$X$cov.names[1:20])
@@ -75,7 +80,7 @@ image(X[1, , , 2],
       asp = 0.625)
 ```
 
-We will model extremes of positive $Y$, i.e., square-root burnt aree. Note that I'm completely removing all zero values - we won't be needing these here - and now our data are stored vectors, rather than arrays.
+We will model extremes of positive $Y$, i.e., square-root burnt area. Note that I'm completely removing all zero values - we won't be needing these here - and now our data are stored vectors, rather than arrays.
 ```{r}
 X.positive <- apply(X, 4, function(x) x[Y > 0])
 Y.positive <- sqrt(Y[Y > 0])
@@ -120,7 +125,7 @@ model %>%
   layer_dense(units = 64, activation = 'relu') %>%
   
   
-  # Add a final layer with 1 ouput
+  # Add a final layer with 1 output
   layer_dense(units = 1, activation = 'linear')
 ```
 
@@ -166,7 +171,7 @@ model <- keras_model_sequential() %>%
            metrics = list("mean_absolute_error"))
 
 checkpoint <- callback_model_checkpoint(
-  paste0("checkpoints/LSE"),
+  paste0("checkpoints/LSE.weights.h5"),
   monitor = "val_loss",
   verbose = 0,
   save_best_only = TRUE,
@@ -179,8 +184,8 @@ history <- model %>% fit( x = X_train,
                           y = as.matrix(log(Y_train)),
                           epochs=50,
                           batch_size=16,
-                            verbose = 0,
-                          callback = list(checkpoint),
+                          verbose = 0,
+                          callbacks = list(checkpoint),
                           validation_split=0.2)
 ```
 
@@ -190,8 +195,8 @@ plot(history)
 
 Now, load that best saved checkpoint:
 ```{r}
-model <- load_model_weights_tf(model,
-                                 filepath = paste0("checkpoints/LSE"))
+model <- load_model_weights(model,
+                                 filepath = paste0("checkpoints/LSE.weights.h5"))
 ```
 
 We now get the predictions from the fitted model, using the standard `predict` function.
@@ -305,7 +310,7 @@ u.model %>%
   compile(optimizer = "adam", loss = tilted_loss)
 
 checkpoint <- callback_model_checkpoint(
-  paste0("checkpoints/u"),
+  paste0("checkpoints/u.weights.h5"),
   monitor = "val_loss",
   verbose = 0,
   save_best_only = TRUE,
@@ -317,10 +322,10 @@ checkpoint <- callback_model_checkpoint(
 history <- u.model %>% fit(
   x = X_train,
   y = as.matrix(Y_train),
-  batch_size = 64,
-  epochs = 40,
+  batch_size = 32,
+  epochs = 60,
     verbose = 0,
-  callback = list(checkpoint),
+  callbacks = list(checkpoint),
   validation_split = 0.2
 )
 ```
@@ -331,8 +336,8 @@ plot(history)
 
 Now load that best checkpoint:
 ```{r}
-u.model <- load_model_weights_tf(u.model,
-                                 filepath = paste0("checkpoints/u"))
+u.model <- load_model_weights(u.model,
+                                 filepath = paste0("checkpoints/u.weights.h5"))
 ```
 
 Evaluate the test predictions of the $\tau$-quantile. As a sanity check, we will evalute the proportion of test data that exceed the predicted quantile; this should be close to $1-\tau$.
@@ -412,7 +417,7 @@ GPD_nll <- function(y_true, y_pred) {
   #Evaluate log-likelihood
   ll1 = -(1 / xi + 1) * op_log(1 + xi * y / sigma)
   
-  ll2 = op_$log(sigma)
+  ll2 = -op_log(sigma)
   
   return(-(op_sum(ll1 + ll2)))
 }
@@ -425,7 +430,7 @@ GPD.model %>%
   compile(optimizer = "adam", loss = GPD_nll)
 
 checkpoint <- callback_model_checkpoint(
-  paste0("checkpoints/GPD"),
+  paste0("checkpoints/GPD.weights.h5"),
   monitor = "val_loss",
   verbose = 0,
   save_best_only = TRUE,
@@ -442,7 +447,7 @@ history <- GPD.model %>% fit(
   batch_size = 16,
   epochs = 100,
   verbose = 0,
-  callback = list(checkpoint, early.stopping),
+  callbacks = list(checkpoint, early.stopping),
   validation_split = 0.2
 )
 
@@ -452,8 +457,8 @@ plot(history)
 
 Now, load that best checkpoint:
 ```{r}
-GPD.model <- GPD.model %>% load_model_weights_tf(
-                                 filepath = paste0("checkpoints/GPD"))
+GPD.model <- GPD.model %>% load_model_weights(
+                                 filepath = paste0("checkpoints/GPD.weights.h5"))
 ```
 
 We will save the test negative log-likelihood and use this for model comparison.
@@ -503,45 +508,7 @@ abline(a = 0, b = 1, col = "red")
 
 ```
 
-How does a linear model compare?
-```{r}
-GPD.linear.model <- keras_model_sequential() %>%
-  layer_dense(units = 2, activation = 'exponential')
-GPD.linear.model %>%
-  compile(optimizer = "adam", loss = GPD_nll)
 
-history <- GPD.linear.model %>% fit(
-  x = X_train.excess,
-  y = as.matrix(Y_train.excess),
-  batch_size = 16,
-  epochs = 40,
-  verbose = 0,
-  validation_split = 0.2
-)
-plot(history)
-test_loss_GPD2 <-  GPD.linear.model %>% evaluate(X_test.excess,
-                                                 as.matrix(Y_test.excess),
-                                                 batch_size = length(Y_test.excess))
-print(paste0("test loss for linear GPD: ", test_loss_GPD2))
-
-test.linearGPD.estimates <- GPD.linear.model %>% predict(X_test.excess)
-exp.data = apply(cbind(Y_test.excess, test.linearGPD.estimates[,1], test.linearGPD.estimates[,2]), 1, function(x) {
-  qexp(evd::pgpd(
-    x[1],
-    loc = 0,
-    scale = x[2],
-    shape = x[3]
-  ))
-})
-
-n_p=length(exp.data)
-ps=(1:n_p)/(n_p+1)
-qs=quantile(exp.data,ps,na.rm=T)
-
-plot(qexp(ps),qs,ylab="Fitted",xlab="Theoretical",main="Linear model",pch=20,asp=1)
-abline(a=0,b=1,col="red")
-
-```
 
 Now, let's look at maps of the estimated scale and shape parameters.
 ```{r fig.height =3, fig.width = 9}
@@ -605,7 +572,7 @@ GPD.model2 %>%
   compile(optimizer = "adam", loss = GPD_nll)
 
 checkpoint <- callback_model_checkpoint(
-  paste0("checkpoints/GPD2"),
+  paste0("checkpoints/GPD2.weights.h5"),
   monitor = "val_loss",
   verbose = 0,
   save_best_only = TRUE,
@@ -625,12 +592,12 @@ history <- GPD.model2 %>% fit(
   batch_size = 16,
   epochs = 100,
   verbose = 0,
-  callback = list(checkpoint, early.stopping),
+  callbacks = list(checkpoint, early.stopping),
   validation_split = 0.2
 )
 plot(history)
 
-GPD.model2 <- GPD.model2 %>% load_model_weights_tf(filepath = paste0("checkpoints/GPD2"))
+GPD.model2 <- GPD.model2 %>% load_model_weights(filepath = paste0("checkpoints/GPD2.weights.h5"))
 
 #Get predictions 
 test.GPD.estimates <- GPD.model2 %>% predict(list(X_test.excess, as.matrix(X_test.excess[, 1])))
@@ -671,12 +638,12 @@ abline(a = 0, b = 1, col = "red")
 
 
 ```{r}
-test_loss_GPD3 <-  GPD.model2 %>% evaluate(
+test_loss_GPD2 <-  GPD.model2 %>% evaluate(
   list(X_test.excess, as.matrix(X_test.excess[, 1])),
   as.matrix(Y_test.excess),
   batch_size = length(Y_test.excess)
 )
-print(paste0("test loss for GPD NN2: ", test_loss_GPD3))
+print(paste0("test loss for GPD NN2: ", test_loss_GPD2))
 ```
 
 Map your predictions
@@ -707,15 +674,13 @@ xi.predictions[Y[t, , ] < 0] = NA
 image(xi.predictions, main = "xi prediction", asp = 0.625)
 ```
 
-For the last model, we will make $\xi(\mathbf{x})$ constant. We achieve this by fixing the weights in the xi_model to zero, and allowing only the bias to be estimated.
+For the last model, we will make $\xi(\mathbf{x})$ constant. We achieve this by making `input_xi` a vector of ones.
 ```{r}
 xi_model_fixed <- input_xi %>%
   layer_dense(
-    units = 1,
-    weights = list(matrix(0, nrow = 1, ncol = 1), array(1)),
-    trainable = F
-  )  %>%
-  layer_dense(units = 1, activation = 'sigmoid') 
+    units = 1, use_bias = F,
+ activation = 'sigmoid') 
+
 ```
 Now, join the two models together and define the inputs and outputs:
 ```{r}
@@ -733,7 +698,7 @@ GPD.model3 %>%
   compile(optimizer = "adam", loss = GPD_nll)
 
 checkpoint <- callback_model_checkpoint(
-  paste0("checkpoints/GPD3"),
+  paste0("checkpoints/GPD3.weights.h5"),
   monitor = "val_loss",
   verbose = 0,
   save_best_only = TRUE,
@@ -744,24 +709,24 @@ checkpoint <- callback_model_checkpoint(
 history <- GPD.model3 %>% fit(
   x = list(
     "input_sigma" = X_train.excess,
-    "input_xi" = as.matrix(X_train.excess[, 1])
+    "input_xi" = as.matrix(rep(1,nrow(X_train.excess)))
   ),
   y = as.matrix(Y_train.excess),
   batch_size = 16,
   epochs = 100,
   verbose=0,
-  callback = list(checkpoint,early.stopping),
+  callbacks = list(checkpoint,early.stopping),
   validation_split = 0.2
 )
 plot(history)
-GPD.model3 <- GPD.model3 %>% load_model_weights_tf(
-                                 filepath = paste0("checkpoints/GPD3"))
+GPD.model3 <- GPD.model3 %>% load_model_weights(
+                                 filepath = paste0("checkpoints/GPD3.weights.h5"))
 ```
 
 Get your predictions:
 
 ```{r}
-test.GPD.estimates <- GPD.model3 %>% predict(list(X_test.excess, as.matrix(X_test.excess[, 1])))
+test.GPD.estimates <- GPD.model3 %>% predict(list(X_test.excess, as.matrix(rep(1, nrow(X_test.excess)))))
 test.sigma = test.GPD.estimates[, 1]
 test.xi = test.GPD.estimates[1, 2]
 hist(test.sigma, main = "sigma estimates")
@@ -799,19 +764,43 @@ abline(a = 0, b = 1, col = "red")
 
 Now, let's compare all four models. We should find that model 3 is the preferred, and provides the best test loss.
 ```{r}
-test_loss_GPD4 <-  GPD.model3 %>% evaluate(
-  list(X_test.excess, as.matrix(X_test.excess[, 1])),
+test_loss_GPD3 <-  GPD.model3 %>% evaluate(
+  list(X_test.excess, as.matrix(rep(0,nrow(X_test.excess)))),
   as.matrix(Y_test.excess),
   batch_size = length(Y_test.excess)
 )
 
 print(paste0("test loss for GPD NN1: ", test_loss_GPD1))
-print(paste0("test loss for GPD NN2: ", test_loss_GPD3))
-print(paste0("test loss for GPD NN3 (homogeneous xi): ", test_loss_GPD4))
+print(paste0("test loss for GPD NN2: ", test_loss_GPD2))
+print(paste0("test loss for GPD NN3 (homogeneous xi): ", test_loss_GPD3))
 print(paste0("test loss for linear GPD model: ", test_loss_GPD2))
 ```
+How does a linear model compare?
+```{r}
+GPD.linear.model <- keras_model_sequential() %>%
+  layer_dense(units = 2, activation = 'exponential')
+GPD.linear.model %>%
+  compile(optimizer = "adam", loss = GPD_nll)
 
-Here are our final mapped estimates for the last model. 
+history <- GPD.linear.model %>% fit(
+  x = X_train.excess,
+  y = as.matrix(Y_train.excess),
+  batch_size = 16,
+  epochs = 40,
+  verbose = 0,
+  validation_split = 0.2
+)
+plot(history)
+test_loss_linear_GPD <-  GPD.linear.model %>% evaluate(X_test.excess,
+                                                 as.matrix(Y_test.excess),
+                                                 batch_size = length(Y_test.excess))
+print(paste0("test loss for linear GPD: ", test_loss_linear_GPD))
+
+
+```
+
+
+Here are our final mapped estimates for the last MLP model. 
 
 
 ```{r fig.height =3, fig.width = 6}
@@ -826,7 +815,7 @@ X.plot.scaled <- apply(as.matrix(1:ncol(X.plot)), 1, function(ind)
 
 image(log(Y[t, , ]), main = "Observation", asp = 0.625)
 
-NN.predictions <- GPD.model3 %>% predict(list(X.plot.scaled, as.matrix(X.plot.scaled[, 1])))
+NN.predictions <- GPD.model3 %>% predict(list(X.plot.scaled, as.matrix(rep(1, nrow(X.plot.scaled)))))
 sigma.predictions <- NN.predictions[, 1]
 dim(sigma.predictions) <- dim(Y)[2:3]
 sigma.predictions[Y[t, , ] < 0] = NA
@@ -849,12 +838,12 @@ We will use the `lime` R package. Below, I define a model class and prediction f
 library(lime)
 
 class (GPD.model3)
-model_type.keras.src.engine.functional.Functional <- function(x, ...) {
+model_type.keras.src.models.functional.Functional <- function(x, ...) {
   "regression"
 }
 
-predict_model.keras.src.engine.functional.Functional <- function (x, newdata, type, ...) {
-  pred <- x %>% predict(list(as.matrix(newdata), as.matrix(newdata[, 1])))
+predict_model.keras.src.models.functional.Functional <- function (x, newdata, type, ...) {
+  pred <- x %>% predict(list(as.matrix(newdata), as.matrix(rep(0, nrow(newdata)))))
   
   data.frame(log(pred[, 1]))
 }
