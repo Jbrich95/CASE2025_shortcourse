@@ -280,7 +280,7 @@ All loss functions in Keras take two in puts: `y_true`, the true values of your 
 
 Loss functions must be differentiable. To ensure this is the case, we build them using backend Keras functions. This can sometimes make it quite difficult to write custom loss functions in Keras; for these examples, the loss functions are quite simple, but you may need to get a bit creative if your loss function uses non-standard operations!
 ```{r}
-tau <- 0.8 # Set quantile level
+tau <- 0.85 # Set quantile level
 tilted_loss <- function(y_true, y_pred) {
 
   error = y_true - y_pred
@@ -322,7 +322,7 @@ checkpoint <- callback_model_checkpoint(
 history <- u.model %>% fit(
   x = X_train,
   y = as.matrix(Y_train),
-  batch_size = 32,
+  batch_size = 64,
   epochs = 60,
     verbose = 0,
   callbacks = list(checkpoint),
@@ -563,7 +563,7 @@ xi_model <- input_xi %>%
   layer_dense(units = 1, activation = 'sigmoid') 
 ```
 
-Now, concatenate (join) the two models together. This will be our ouput later, i.e., `y_pred`. We also need to tell Keras what are the inputs and outputs:
+Now, concatenate (join) the two models together. This will be our output later, i.e., `y_pred`. We also need to tell Keras what are the inputs and outputs:
 ```{r}
 output <- layer_concatenate(c(sigma_model, xi_model))
 GPD.model2 <- keras_model(inputs = c(input_sigma, input_xi), outputs = output)
@@ -679,7 +679,7 @@ For the last model, we will make $\xi(\mathbf{x})$ constant. We achieve this by 
 xi_model_fixed <- input_xi %>%
   layer_dense(
     units = 1, use_bias = F,
- activation = 'sigmoid') 
+ activation = 'exponential') 
 
 ```
 Now, join the two models together and define the inputs and outputs:
@@ -692,7 +692,7 @@ GPD.model3 <- keras_model(inputs = c(input_sigma, input_xi),
 Note that, in the above, we are reusing `sigma_model`. We have not redefined `sigma_model`, so its weights/biases have already been ``pre-trained''.
 
 
-Now, copmile and train the final GPD model.
+Now, compile and train the final GPD model.
 ```{r}
 GPD.model3 %>%
   compile(optimizer = "adam", loss = GPD_nll)
@@ -765,7 +765,7 @@ abline(a = 0, b = 1, col = "red")
 Now, let's compare all four models. We should find that model 3 is the preferred, and provides the best test loss.
 ```{r}
 test_loss_GPD3 <-  GPD.model3 %>% evaluate(
-  list(X_test.excess, as.matrix(rep(0,nrow(X_test.excess)))),
+  list(X_test.excess, as.matrix(rep(1,nrow(X_test.excess)))),
   as.matrix(Y_test.excess),
   batch_size = length(Y_test.excess)
 )
@@ -773,7 +773,6 @@ test_loss_GPD3 <-  GPD.model3 %>% evaluate(
 print(paste0("test loss for GPD NN1: ", test_loss_GPD1))
 print(paste0("test loss for GPD NN2: ", test_loss_GPD2))
 print(paste0("test loss for GPD NN3 (homogeneous xi): ", test_loss_GPD3))
-print(paste0("test loss for linear GPD model: ", test_loss_GPD2))
 ```
 How does a linear model compare?
 ```{r}
